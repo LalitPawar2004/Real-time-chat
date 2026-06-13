@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect } from 'react'
 import api from '../api/axios'
 import { useAuth } from './AuthContext'
 import { useSocket } from './SocketContext'
+import { encryptMessage, decryptMessage } from '../utils/encryption'
 
 const ChatContext = createContext()
 
@@ -14,35 +15,81 @@ export const ChatProvider = ({ children }) => {
   const [loading, setLoading] = useState(false)
   const [typingUsers, setTypingUsers] = useState({})
 
-  useEffect(() => { if (user) fetchConversations() }, [user])
+  useEffect(() => { 
+    if (user) fetchConversations() 
+  }, [user])
 
   const fetchConversations = async () => {
-    const res = await api.get('/chat/conversations')
-    setConversations(res.data)
+    try {
+      const res = await api.get('/chat/conversations')
+      setConversations(res.data)
+    } catch (error) {
+      console.error('Failed to fetch conversations:', error)
+    }
   }
 
   const fetchMessages = async (id) => {
     setLoading(true)
-    const res = await api.get(`/chat/conversations/${id}/messages`)
-    setMessages(res.data)
+    try {
+      const res = await api.get(`/chat/conversations/${id}/messages`)
+      // Decrypt messages after fetching
+      const decryptedMessages = await Promise.all(
+        res.data.map(async (msg) => ({
+          ...msg,
+          text: msg.text ? await decryptMessage(msg.text).catch(() => msg.text) : msg.text
+        }))
+      )
+      setMessages(decryptedMessages)
+    } catch (error) {
+      console.error('Failed to fetch messages:', error)
+    }
     setLoading(false)
   }
 
   useEffect(() => {
     if (!socket) return
-    socket.on('newMessage', (msg) => {
-      setMessages(prev => [...prev, msg])
-      setConversations(prev => prev.map(c => c._id === msg.conversationId ? {...c, lastMessage: msg} : c))
+
+    socket.on('newMessage', async (msg) => {
+      // Decrypt incoming message
+      const decryptedMsg = {
+        ...msg,
+        text: msg.text ? await decryptMessage(msg.text).catch(() => msg.text) : msg.text
+      }
+      
+      setMessages(prev => [...prev, decryptedMsg])
+      setConversations(prev => 
+        prev.map(c => 
+          c._id === msg.conversationId 
+            ? { ...c, lastMessage: decryptedMsg } 
+            : c
+        )
+      )
     })
+
     socket.on('userTyping', ({ conversationId, userId }) => {
-      setTypingUsers(prev => ({...prev, [conversationId]: [...(prev[conversationId]||[]).filter(id=>id!==userId), userId]}))
+      setTypingUsers(prev => ({
+        ...prev, 
+        [conversationId]: [...(prev[conversationId] || []).filter(id => id !== userId), userId]
+      }))
     })
+
     socket.on('userStoppedTyping', ({ conversationId, userId }) => {
-      setTypingUsers(prev => ({...prev, [conversationId]: (prev[conversationId]||[]).filter(id=>id!==userId)}))
+      setTypingUsers(prev => ({
+        ...prev, 
+        [conversationId]: (prev[conversationId] || []).filter(id => id !== userId)
+      }))
     })
+
     socket.on('messagesRead', ({ conversationId, userId }) => {
-      setMessages(prev => prev.map(m => m.conversationId===conversationId && m.sender._id!==userId ? {...m, readBy:[...(m.readBy||[]), userId]} : m))
+      setMessages(prev => 
+        prev.map(m => 
+          m.conversationId === conversationId && m.sender._id !== userId 
+            ? { ...m, readBy: [...(m.readBy || []), userId] } 
+            : m
+        )
+      )
     })
+
     return () => {
       socket.off('newMessage')
       socket.off('userTyping')
@@ -57,19 +104,41 @@ export const ChatProvider = ({ children }) => {
     socket?.emit('joinConversation', convo._id)
   }
 
-  const sendMessage = (text, imageUrl) => {
+  const sendMessage = async (text, imageUrl) => {
     if (!activeConversation || !socket) return
-    socket.emit('sendMessage', { conversationId: activeConversation._id, text, imageUrl })
+    
+    // Encrypt message before sending
+    const encryptedText = text ? await encryptMessage(text) : text
+    
+    socket.emit('sendMessage', { 
+      conversationId: activeConversation._id, 
+      text: encryptedText, 
+      imageUrl 
+    })
   }
 
   const markAsRead = () => {
-    if (activeConversation && socket) socket.emit('markAsRead', { conversationId: activeConversation._id })
+    if (activeConversation && socket) {
+      socket.emit('markAsRead', { conversationId: activeConversation._id })
+    }
   }
 
-  useEffect(() => { if (activeConversation) markAsRead() }, [messages, activeConversation])
+  useEffect(() => { 
+    if (activeConversation) markAsRead() 
+  }, [messages, activeConversation])
 
   return (
-    <ChatContext.Provider value={{ conversations, activeConversation, messages, loading, selectConversation, fetchConversations, sendMessage, typingUsers, onlineUsers }}>
+    <ChatContext.Provider value={{ 
+      conversations, 
+      activeConversation, 
+      messages, 
+      loading, 
+      selectConversation, 
+      fetchConversations, 
+      sendMessage, 
+      typingUsers, 
+      onlineUsers 
+    }}>
       {children}
     </ChatContext.Provider>
   )
