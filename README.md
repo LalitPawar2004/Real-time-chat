@@ -1,4 +1,4 @@
-# 🔒 SecureChat
+# 🔒 Real Time Chat
 
 A real-time end-to-end encrypted chat application built with the MERN stack and Socket.io. Messages are encrypted using AES-256-GCM before transmission, ensuring only the intended recipients can read them.
 
